@@ -91,9 +91,11 @@ function browserConfig(browser) {
   if (!entry) throw new SessionError(`Unknown browser "${browser}". Options: ${Object.keys(BROWSERS).join(', ')}`);
   const cfg = entry[process.platform];
   if (!cfg) {
-    throw new SessionError(
-      `Reading ${browser} cookies is not supported on ${process.platform}. Use --mode branch.`,
-    );
+    const why =
+      process.platform === 'win32'
+        ? 'Chromium browsers on Windows use app-bound cookie encryption that only the browser itself can decrypt.'
+        : `Reading ${browser} cookies is not supported on ${process.platform}.`;
+    throw new SessionError(`${why} Save your session once with "gh-img login" (see README).`);
   }
   return cfg;
 }

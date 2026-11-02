@@ -16,8 +16,10 @@ GitHub has no public API for image attachments (`gh` can't do it either). The
 only native path is the one the web UI uses when you drag & drop an image, and
 it requires the browser session cookie. `gh-img`:
 
-1. **Reads the cookie straight from Chrome's cookie store**, decrypting it with the
-   macOS Keychain key. You never copy it, and your agent never sees it.
+1. **Reads the cookie straight from Chrome's cookie store** (macOS and Linux),
+   decrypting it with the OS keychain key. You never copy it, and your agent never
+   sees it. Where that's not possible (Windows), you save it once with `gh-img login`
+   and it is kept encrypted by the OS.
 2. Replays the web upload flow (`/upload/policies/assets` → S3 → finalize) and
    returns `https://github.com/user-attachments/assets/…` URLs.
 3. Prints **only** the resulting markdown.
@@ -33,13 +35,29 @@ session path fails) create commits, and always on a separate orphan branch
 (`gh-img-assets`) that shares no history with your code. They are never used
 unless you ask for them.
 
+## Platform support
+
+| | macOS | Linux | Windows |
+|---|---|---|---|
+| Read session from Chrome/Brave/Edge/Chromium automatically | ✅ (+ Arc) | ✅ | ❌ ¹ |
+| Manual session (`gh-img login`) storage | Keychain | Secret Service (`secret-tool`), else `0600` file | File encrypted with DPAPI (your Windows user only) |
+| `gh-img login --clipboard` | `pbpaste` | `wl-paste`, `xclip` or `xsel` | PowerShell `Get-Clipboard` |
+| Upload (`session` and `branch` modes) | ✅ | ✅ | ✅ |
+
+¹ Since Chrome 127, Chromium browsers on Windows use *app-bound encryption*: only
+the browser itself can decrypt its cookies. On Windows, run `gh-img login` once
+(and again when the GitHub session expires, usually after weeks).
+
+Tests run on all three OSes in CI, including a real round trip through each
+OS secret store.
+
 ## Security
 
 | | |
 |---|---|
 | The token is never printed | Not in `--verbose`, `doctor` or error messages |
 | Never passed as a process argument | It travels as an HTTP header inside the Node process. Shell scripts that call `curl -H "Cookie: …"` expose it to `ps` |
-| Not written to disk | The temporary copy of the cookie DB is deleted right away. The optional manual session lives in the OS keychain |
+| Not written to disk in clear text | The temporary copy of the cookie DB is deleted right away. The optional manual session lives in the OS secret store (Keychain / DPAPI / Secret Service). Only Linux without a keyring falls back to a `0600` file |
 | Not sent to S3 | Cookies only go to `github.com` |
 | Zero dependencies | Only Node ≥ 22.13 (`node:sqlite`, `fetch`, `crypto`): no supply chain to audit |
 
@@ -62,26 +80,37 @@ in `~/.claude/settings.json`:
 Requirements: **Node ≥ 22.13**, an authenticated [`gh`](https://cli.github.com)
 (`gh auth login`), and Chrome (or Brave, Edge, Arc, Chromium) logged into github.com.
 
-### Option 1: as a `gh` extension
+### Option 1: as a `gh` extension (macOS / Linux)
 
 ```bash
 gh extension install neohunter/gh-img
 gh img --version    # same CLI, invoked as `gh img`
 ```
 
-### Option 2: from source with npm link
+### Option 2: from source with npm link (macOS / Linux / Windows)
 
 ```bash
 git clone https://github.com/neohunter/gh-img.git
 cd gh-img
-npm link            # puts `gh-img` on your PATH
+npm link            # puts `gh-img` on your PATH (gh-img.cmd on Windows)
 gh-img --version
 ```
+
+To update later: `git pull` inside the folder (no need to link again).
 
 > Using asdf? Run `asdf reshim nodejs` after `npm link` (and again after switching
 > Node versions).
 
-### First run: Keychain permission
+### Windows: save your session once
+
+```powershell
+gh-img login --clipboard    # after copying user_session from Chrome DevTools
+gh-img doctor -R owner/repo
+```
+
+See [Manual fallback](#manual-fallback-saving-your-user_session) for details.
+
+### First run on macOS: Keychain permission
 
 ```bash
 gh-img doctor -R owner/repo
@@ -201,6 +230,19 @@ gh issue comment 45 -R acme/api --body "Repro:
 $(gh-img -R acme/api bug-repro.mp4)"
 ```
 
+### Windows PowerShell
+
+```powershell
+gh-img shot.png | Set-Clipboard
+gh pr comment 123 --body (gh-img after.png | Out-String)
+
+# Screenshots section in the PR description
+$images = gh-img shots\*.png | Out-String
+$body = gh pr view 123 --json body -q .body | Out-String
+"$body`n## Screenshots`n`n$images" | Set-Content -Encoding utf8 $env:TEMP\pr-body.md
+gh pr edit 123 --body-file $env:TEMP\pr-body.md
+```
+
 ### URLs only (for scripts)
 
 ```bash
@@ -227,19 +269,24 @@ The URL renders in PRs for anyone with read access to the repo.
 
 ## Manual fallback: saving your `user_session`
 
-If the browser cookie can't be read (Chrome on another machine, an unsupported
-browser, a Chrome encryption change, etc.), save it once by hand. **Run this yourself
+Required on **Windows**. Also useful on macOS/Linux if the browser cookie can't be
+read (an unsupported browser, a Chrome encryption change, etc.). Save it once by hand. **Run this yourself
 in your terminal, never through an agent.** That way the value never lands in
 shell history or agent logs.
 
 1. In Chrome: DevTools → **Application** → **Cookies** → `https://github.com` →
    copy the value of `user_session`.
-2. Save it either way:
+2. Save it either way (same commands in bash, zsh, PowerShell or cmd):
 
    ```bash
    gh-img login               # paste the value; input is hidden
    gh-img login --clipboard   # read it from the clipboard, then clear the clipboard
    ```
+
+   `--clipboard` is the same as pasting, minus the paste: it reads the copied value
+   and then empties the clipboard so the token isn't left there to be pasted by
+   accident (into a chat, Slack…). On Windows consoles where Ctrl+V doesn't paste
+   into hidden input, right-click or use `--clipboard`.
 
    `login` validates the session against GitHub before saving it:
 
@@ -251,10 +298,15 @@ shell history or agent logs.
 3. Done. With `--source auto` (the default), `gh-img` tries the browser first and
    falls back to the saved session. To use only the saved one: `--source stored`.
 
-Where it's stored: **macOS Keychain** (service `gh-img`). On Linux it uses Secret
-Service (`secret-tool`), falling back to `~/.config/gh-img/session` with `0600`
-permissions. The value is passed to those tools through stdin, never as an argument.
-Delete it with `gh-img logout`.
+Where it's stored:
+
+- **macOS:** Keychain, service `gh-img`.
+- **Windows:** `%APPDATA%\gh-img\session.dpapi`, encrypted with DPAPI. Only your
+  Windows user account can decrypt it.
+- **Linux:** Secret Service (`secret-tool`). Without a keyring, it falls back to
+  `~/.config/gh-img/session` with `0600` permissions.
+
+The value never appears in a process' arguments. Delete it with `gh-img logout`.
 
 GitHub sessions expire. If `doctor` says the saved one is no longer valid, run
 `gh-img login` again.
@@ -272,7 +324,8 @@ GitHub sessions expire. If `doctor` says the saved one is no longer valid, run
 | `is not visible with the browser session (404)` | The chosen profile has no access to the repo. Use `--user`/`--profile` |
 | `Upload token not found` | No write access to the repo, or GitHub changed its HTML. Try `--mode auto` |
 | `GitHub rejected the upload (HTTP 422)` | File too large (images ≤ 10 MB, videos ≤ 100 MB) or type not allowed |
-| Chrome on Windows | Not supported (app-bound cookie encryption). Use `gh-img login` or `--mode branch` |
+| Windows: `app-bound cookie encryption` message | Expected: run `gh-img login --clipboard` once |
+| Windows: `Could not save the session with DPAPI` | PowerShell is blocked by policy on that machine. Run `gh-img login` from a normal PowerShell window |
 
 ## How it works
 

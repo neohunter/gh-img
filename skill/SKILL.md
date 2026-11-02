@@ -18,8 +18,12 @@ ready-to-paste markdown, one line per file, on stdout. Warnings go to stderr.
   read browser cookie files or the Keychain yourself. `gh-img` handles that.
 - Do not commit screenshots to the repo. Do not use `--mode branch`/`auto`
   unless the user asks for it.
-- If `gh-img` fails, show its error message to the user and stop. Typical fix:
-  the user logs in to github.com in Chrome again; then retry.
+- If `gh-img` fails, show its error message to the user and stop. Typical fixes
+  (always done by the user, never by you):
+  - macOS/Linux: log in to github.com in Chrome again, then retry.
+  - Windows (browser cookies can't be read there) or any expired saved session:
+    the user copies `user_session` from Chrome DevTools and runs
+    `gh-img login --clipboard` in their own terminal.
 
 ## Usage
 
@@ -31,6 +35,9 @@ gh-img -R owner/repo shots/*.png         # -> ![alt](https://github.com/user-att
 
 Name files `NN-short-description.png` (e.g. `01-dashboard-empty.png`): the alt
 text becomes "dashboard empty". Use `--format html --width 600` to size images.
+
+Wildcards work in any shell, including PowerShell (`gh-img shots\*.png`):
+gh-img expands them itself.
 
 ## Add a Screenshots section to the PR description
 

@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm test
+      - name: CLI smoke test
+        shell: bash
+        run: |
+          node bin/gh-img.js --version
+          node bin/gh-img.js --help > /dev/null
+          # Unsupported file type must fail cleanly with a non-zero exit code
+          echo x > not-an-image.exe
+          if node bin/gh-img.js -R octo/demo not-an-image.exe 2> err.txt; then exit 1; fi
+          grep -q "Unsupported file type" err.txt
+          # Quoted wildcard (as PowerShell passes it) is expanded by gh-img itself
+          if node bin/gh-img.js -R octo/demo '*.exe' 2> err.txt; then exit 1; fi
+          grep -q "Unsupported file type: not-an-image.exe" err.txt
+          if node bin/gh-img.js -R octo/demo 'nothing-*.png' 2> err.txt; then exit 1; fi
+          grep -q "No files match" err.txt
+          if grep -qi "experimental" err.txt; then exit 1; fi

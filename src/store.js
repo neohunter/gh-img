@@ -1,7 +1,11 @@
 // Manually saved session (fallback when the browser cookie can't be read).
-// macOS: Keychain. Linux: Secret Service (secret-tool), else a 0600 file.
-// The token is passed to the OS tools through stdin, never via argv (argv is
-// visible to other processes through `ps`).
+//
+//   macOS    Keychain (security CLI)
+//   Windows  file encrypted with DPAPI for the current Windows user (PowerShell)
+//   Linux    Secret Service (secret-tool), else a 0600 file
+//
+// The token is handed to OS tools via stdin or a child-only environment
+// variable, never via argv (argv is visible to other users through `ps`).
 
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -9,72 +13,129 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { UserError } from './util.js';
 
-const SERVICE = 'gh-img';
+// Overridable so tests never touch the real saved session.
+const NAME = process.env.GH_IMG_STORE_NAME || 'gh-img';
 const ACCOUNT = 'user_session';
-const FILE = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'gh-img', 'session');
 
 const TOKEN_RE = /^[A-Za-z0-9_-]{20,200}$/;
 
+function storeFile() {
+  if (process.platform === 'win32') {
+    return join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), NAME, 'session.dpapi');
+  }
+  return join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), NAME, 'session');
+}
+
 export function normalizeToken(input) {
+  let t = (input ?? '')
+    .replace(/\x1b\[20[01]~/g, '') // bracketed-paste markers
+    .replace(/[\x00-\x1f\x7f]/g, '') // stray control characters
+    .trim()
+    .replace(/^["']|["']$/g, '');
   // Accept the bare value or a pasted "user_session=XXXX; ..." fragment.
-  let t = (input ?? '').trim().replace(/^["']|["']$/g, '');
   const m = /(?:^|[;\s])user_session=([^;\s]+)/.exec(t);
   if (m) t = m[1];
   if (!TOKEN_RE.test(t)) throw new UserError('That does not look like a GitHub user_session value.');
   return t;
 }
 
-function run(cmd, args, input) {
-  return spawnSync(cmd, args, { input, encoding: 'utf8' });
+function run(cmd, args, { input, env } = {}) {
+  return spawnSync(cmd, args, { input, encoding: 'utf8', env: env ? { ...process.env, ...env } : process.env, windowsHide: true });
 }
 
 function hasCmd(cmd) {
-  return !run('which', [cmd]).status;
+  return run(process.platform === 'win32' ? 'where' : 'which', [cmd]).status === 0;
 }
+
+function powershell(script, env) {
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  return run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], { env });
+}
+
+// ---- Windows DPAPI -------------------------------------------------------
+
+function winSave(token, file) {
+  mkdirSync(dirname(file), { recursive: true });
+  const r = powershell(
+    `$s = ConvertTo-SecureString $env:GH_IMG_SECRET -AsPlainText -Force
+     ConvertFrom-SecureString $s | Set-Content -LiteralPath $env:GH_IMG_FILE -Encoding ascii`,
+    { GH_IMG_SECRET: token, GH_IMG_FILE: file },
+  );
+  if (r.status !== 0) throw new UserError(`Could not save the session with DPAPI: ${r.stderr.trim()}`);
+}
+
+function winRead(file) {
+  const r = powershell(
+    `$s = Get-Content -LiteralPath $env:GH_IMG_FILE | ConvertTo-SecureString
+     $p = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
+     try { [Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($p)) }
+     finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($p) }`,
+    { GH_IMG_FILE: file },
+  );
+  return r.status === 0 ? r.stdout.trim() : null;
+}
+
+// ---- public API ------------------------------------------------------------
 
 export function saveStoredSession(token) {
   token = normalizeToken(token);
   if (process.platform === 'darwin') {
     // `security -i` reads commands from stdin, keeping the secret out of argv.
-    const r = run('security', ['-i'], `add-generic-password -U -s ${SERVICE} -a ${ACCOUNT} -l "gh-img GitHub session" -w "${token}"\n`);
+    const r = run('security', ['-i'], {
+      input: `add-generic-password -U -s ${NAME} -a ${ACCOUNT} -l "${NAME} GitHub session" -w "${token}"\n`,
+    });
     if (r.status !== 0) throw new UserError(`Could not save to the Keychain: ${r.stderr.trim()}`);
     return 'macOS Keychain';
   }
-  if (process.platform === 'linux' && hasCmd('secret-tool')) {
-    const r = run('secret-tool', ['store', '--label=gh-img GitHub session', 'service', SERVICE, 'account', ACCOUNT], token);
+  const file = storeFile();
+  if (process.platform === 'win32') {
+    winSave(token, file);
+    return `${file} (encrypted with Windows DPAPI)`;
+  }
+  if (hasCmd('secret-tool')) {
+    const r = run('secret-tool', ['store', `--label=${NAME} GitHub session`, 'service', NAME, 'account', ACCOUNT], { input: token });
     if (r.status === 0) return 'Secret Service keyring';
   }
-  mkdirSync(dirname(FILE), { recursive: true, mode: 0o700 });
-  writeFileSync(FILE, token, { mode: 0o600 });
-  chmodSync(FILE, 0o600);
-  return FILE;
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  writeFileSync(file, token, { mode: 0o600 });
+  chmodSync(file, 0o600);
+  return file;
 }
 
 export function readStoredSession() {
+  const file = storeFile();
   if (process.platform === 'darwin') {
-    const r = run('security', ['find-generic-password', '-s', SERVICE, '-a', ACCOUNT, '-w']);
-    if (r.status === 0 && r.stdout.trim()) return { token: r.stdout.trim(), where: 'macOS Keychain' };
-  } else if (process.platform === 'linux' && hasCmd('secret-tool')) {
-    const r = run('secret-tool', ['lookup', 'service', SERVICE, 'account', ACCOUNT]);
+    const r = run('security', ['find-generic-password', '-s', NAME, '-a', ACCOUNT, '-w']);
+    return r.status === 0 && r.stdout.trim() ? { token: r.stdout.trim(), where: 'macOS Keychain' } : null;
+  }
+  if (process.platform === 'win32') {
+    if (!existsSync(file)) return null;
+    const token = winRead(file);
+    return token ? { token, where: `${file} (DPAPI)` } : null;
+  }
+  if (hasCmd('secret-tool')) {
+    const r = run('secret-tool', ['lookup', 'service', NAME, 'account', ACCOUNT]);
     if (r.status === 0 && r.stdout.trim()) return { token: r.stdout.trim(), where: 'Secret Service keyring' };
   }
-  if (existsSync(FILE)) return { token: readFileSync(FILE, 'utf8').trim(), where: FILE };
-  return null;
+  return existsSync(file) ? { token: readFileSync(file, 'utf8').trim(), where: file } : null;
 }
 
 export function deleteStoredSession() {
   let removed = false;
   if (process.platform === 'darwin') {
-    removed = run('security', ['delete-generic-password', '-s', SERVICE, '-a', ACCOUNT]).status === 0 || removed;
+    removed = run('security', ['delete-generic-password', '-s', NAME, '-a', ACCOUNT]).status === 0;
   } else if (process.platform === 'linux' && hasCmd('secret-tool')) {
-    removed = run('secret-tool', ['clear', 'service', SERVICE, 'account', ACCOUNT]).status === 0 || removed;
+    removed = run('secret-tool', ['clear', 'service', NAME, 'account', ACCOUNT]).status === 0;
   }
-  if (existsSync(FILE)) {
-    rmSync(FILE);
+  const file = storeFile();
+  if (existsSync(file)) {
+    rmSync(file);
     removed = true;
   }
   return removed;
 }
+
+// ---- input helpers ---------------------------------------------------------
 
 // Reads a secret from the terminal without echoing it.
 export function promptHidden(question) {
@@ -117,13 +178,35 @@ export async function readStdin() {
   return data;
 }
 
+function clipboardTools() {
+  if (process.platform === 'darwin') {
+    return { read: () => run('pbpaste', []), clear: () => run('pbcopy', [], { input: '' }) };
+  }
+  if (process.platform === 'win32') {
+    return {
+      read: () => powershell('[Console]::Out.Write((Get-Clipboard -Raw))'),
+      clear: () => powershell('Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::Clear()'),
+    };
+  }
+  if (hasCmd('wl-paste')) {
+    return { read: () => run('wl-paste', ['--no-newline']), clear: () => run('wl-copy', ['--clear']) };
+  }
+  if (hasCmd('xclip')) {
+    return {
+      read: () => run('xclip', ['-selection', 'clipboard', '-o']),
+      clear: () => run('xclip', ['-selection', 'clipboard'], { input: '' }),
+    };
+  }
+  if (hasCmd('xsel')) {
+    return { read: () => run('xsel', ['--clipboard', '--output']), clear: () => run('xsel', ['--clipboard', '--clear']) };
+  }
+  throw new UserError('No clipboard tool found (install wl-clipboard, xclip or xsel), or run "gh-img login" and paste the value.');
+}
+
 export function readClipboard({ clear = true } = {}) {
-  const [get, set] =
-    process.platform === 'darwin'
-      ? [['pbpaste', []], ['pbcopy', []]]
-      : [['xclip', ['-selection', 'clipboard', '-o']], ['xclip', ['-selection', 'clipboard']]];
-  const r = run(get[0], get[1]);
-  if (r.status !== 0) throw new UserError(`Could not read the clipboard (${get[0]}).`);
-  if (clear) run(set[0], set[1], ''); // don't leave the secret sitting in the clipboard
+  const tools = clipboardTools();
+  const r = tools.read();
+  if (r.status !== 0) throw new UserError('Could not read the clipboard.');
+  if (clear) tools.clear(); // don't leave the secret sitting in the clipboard
   return r.stdout;
 }

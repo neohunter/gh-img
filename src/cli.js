@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, globSync, readFileSync, statSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { createBranchUploader, DEFAULT_BRANCH } from './branch-upload.js';
 import { BROWSERS, getBrowserSession, listProfiles } from './cookies.js';
@@ -113,7 +113,7 @@ export async function main(argv) {
 }
 
 async function upload(paths, opts, cfg) {
-  const files = paths.map((p) => {
+  const files = paths.flatMap(expandGlob).map((p) => {
     if (!existsSync(p) || !statSync(p).isFile()) throw new UserError(`File not found: ${p}`);
     return fileInfo(p);
   });
@@ -197,6 +197,14 @@ function repoIdViaApi(owner, repo) {
 }
 
 // Tries each session source until one can obtain an upload token for the repo.
+// PowerShell and cmd.exe don't expand wildcards for native programs, so do it here.
+function expandGlob(arg) {
+  if (existsSync(arg) || !/[*?[]/.test(arg)) return [arg];
+  const matches = globSync(arg.replace(/\\/g, '/')).sort();
+  if (!matches.length) throw new UserError(`No files match: ${arg}`);
+  return matches;
+}
+
 async function sessionUploader(owner, repo, cfg, report = () => {}) {
   const repoId = repoIdViaApi(owner, repo);
   const errors = [];
@@ -223,6 +231,7 @@ async function login(opts) {
   else {
     console.error('Paste the value of the github.com "user_session" cookie');
     console.error('(Chrome DevTools > Application > Cookies > https://github.com). Input is hidden.');
+    if (process.platform === 'win32') console.error('Tip: if Ctrl+V does nothing, right-click to paste, or use "gh-img login --clipboard".');
     raw = await promptHidden('user_session: ');
   }
   const token = normalizeToken(raw);
