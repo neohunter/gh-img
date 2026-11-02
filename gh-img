@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# Entry point when installed as a gh extension: `gh extension install <owner>/gh-img` -> `gh img ...`
+exec node "$(dirname "$0")/bin/gh-img.js" "$@"

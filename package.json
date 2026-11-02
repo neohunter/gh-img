@@ -1,0 +1,30 @@
+{
+  "name": "gh-img",
+  "version": "0.1.0",
+  "description": "Upload screenshots to GitHub user-attachments (PRs, issues, comments) using your browser session — without ever handling the session token yourself.",
+  "type": "module",
+  "bin": {
+    "gh-img": "bin/gh-img.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "skill",
+    "gh-img"
+  ],
+  "scripts": {
+    "test": "node --no-warnings --test"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "keywords": [
+    "github",
+    "screenshots",
+    "pull-request",
+    "user-attachments",
+    "cli",
+    "gh-extension"
+  ],
+  "license": "MIT"
+}
