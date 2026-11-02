@@ -34,3 +34,13 @@ test('strips paste artifacts from the terminal', async () => {
   assert.equal(normalizeToken(`\x1b[200~${TOKEN}\x1b[201~\r\n`), TOKEN);
   assert.equal(normalizeToken(`\x16${TOKEN}`), TOKEN);
 });
+
+test('reads and clears the Windows clipboard', { skip: process.platform !== 'win32' }, async (t) => {
+  const { spawnSync } = await import('node:child_process');
+  const { readClipboard } = await import('../src/store.js');
+  const set = spawnSync('powershell.exe', ['-NoProfile', '-STA', '-Command',
+    `[void][Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms'); [Windows.Forms.Clipboard]::SetText('${TOKEN}')`]);
+  if (set.status !== 0) return t.skip('no clipboard available on this runner');
+  assert.equal(readClipboard().trim(), TOKEN);
+  assert.equal(readClipboard({ clear: false }).trim(), '');
+});

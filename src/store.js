@@ -47,30 +47,46 @@ function hasCmd(cmd) {
   return run(process.platform === 'win32' ? 'where' : 'which', [cmd]).status === 0;
 }
 
-function powershell(script, env) {
+// Windows PowerShell 5.1 is always present. Inheriting PSModulePath from a
+// PowerShell 7 parent breaks module loading in 5.1, so it is dropped, and the
+// scripts below only use .NET types (no cmdlets/modules at all).
+function powershell(script, extraEnv = {}) {
+  const env = { ...process.env, ...extraEnv };
+  for (const k of Object.keys(env)) if (k.toLowerCase() === 'psmodulepath') delete env[k];
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
-  return run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], { env });
+  return spawnSync(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
+    { encoding: 'utf8', env, windowsHide: true },
+  );
 }
 
 // ---- Windows DPAPI -------------------------------------------------------
+// The file holds base64(DPAPI(token)), decryptable only by the same Windows user.
+
+const DPAPI = `[void][Reflection.Assembly]::LoadWithPartialName('System.Security')
+$entropy = [Text.Encoding]::UTF8.GetBytes('gh-img')
+$scope = [Security.Cryptography.DataProtectionScope]::CurrentUser`;
 
 function winSave(token, file) {
-  mkdirSync(dirname(file), { recursive: true });
   const r = powershell(
-    `$s = ConvertTo-SecureString $env:GH_IMG_SECRET -AsPlainText -Force
-     ConvertFrom-SecureString $s | Set-Content -LiteralPath $env:GH_IMG_FILE -Encoding ascii`,
-    { GH_IMG_SECRET: token, GH_IMG_FILE: file },
+    `${DPAPI}
+     $plain = [Text.Encoding]::UTF8.GetBytes($env:GH_IMG_SECRET)
+     [Console]::Out.Write([Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Protect($plain, $entropy, $scope)))`,
+    { GH_IMG_SECRET: token },
   );
-  if (r.status !== 0) throw new UserError(`Could not save the session with DPAPI: ${r.stderr.trim()}`);
+  const blob = r.stdout?.trim();
+  if (r.status !== 0 || !blob) throw new UserError(`Could not encrypt the session with DPAPI: ${(r.stderr || '').trim().slice(0, 300)}`);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, blob);
 }
 
 function winRead(file) {
   const r = powershell(
-    `$s = Get-Content -LiteralPath $env:GH_IMG_FILE | ConvertTo-SecureString
-     $p = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
-     try { [Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($p)) }
-     finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($p) }`,
-    { GH_IMG_FILE: file },
+    `${DPAPI}
+     $blob = [Convert]::FromBase64String($env:GH_IMG_BLOB)
+     [Console]::Out.Write([Text.Encoding]::UTF8.GetString([Security.Cryptography.ProtectedData]::Unprotect($blob, $entropy, $scope)))`,
+    { GH_IMG_BLOB: readFileSync(file, 'utf8').trim() },
   );
   return r.status === 0 ? r.stdout.trim() : null;
 }
@@ -183,9 +199,10 @@ function clipboardTools() {
     return { read: () => run('pbpaste', []), clear: () => run('pbcopy', [], { input: '' }) };
   }
   if (process.platform === 'win32') {
+    const forms = "[void][Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')";
     return {
-      read: () => powershell('[Console]::Out.Write((Get-Clipboard -Raw))'),
-      clear: () => powershell('Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::Clear()'),
+      read: () => powershell(`${forms}; [Console]::Out.Write([Windows.Forms.Clipboard]::GetText())`),
+      clear: () => powershell(`${forms}; [Windows.Forms.Clipboard]::Clear()`),
     };
   }
   if (hasCmd('wl-paste')) {

@@ -325,7 +325,7 @@ GitHub sessions expire. If `doctor` says the saved one is no longer valid, run
 | `Upload token not found` | No write access to the repo, or GitHub changed its HTML. Try `--mode auto` |
 | `GitHub rejected the upload (HTTP 422)` | File too large (images ≤ 10 MB, videos ≤ 100 MB) or type not allowed |
 | Windows: `app-bound cookie encryption` message | Expected: run `gh-img login --clipboard` once |
-| Windows: `Could not save the session with DPAPI` | PowerShell is blocked by policy on that machine. Run `gh-img login` from a normal PowerShell window |
+| Windows: `Could not encrypt the session with DPAPI` | `powershell.exe` is blocked on that machine (e.g. by AppLocker). Ask IT, or use `--mode branch` |
 
 ## How it works
 
