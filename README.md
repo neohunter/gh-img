@@ -77,48 +77,103 @@ in `~/.claude/settings.json`:
 
 ## Installation
 
-Requirements: **Node ≥ 22.13**, an authenticated [`gh`](https://cli.github.com)
-(`gh auth login`), and Chrome (or Brave, Edge, Arc, Chromium) logged into github.com.
+You need **Node ≥ 22.13**, the GitHub CLI [`gh`](https://cli.github.com) logged in,
+**git**, and Chrome (or Brave, Edge, Arc, Chromium) logged into github.com.
 
-### Option 1: as a `gh` extension (macOS / Linux)
+### macOS
 
-```bash
-gh extension install neohunter/gh-img
-gh img --version    # same CLI, invoked as `gh img`
-```
+1. Install the requirements (skip what you already have):
 
-### Option 2: from source with npm link (macOS / Linux / Windows)
+   ```bash
+   brew install node gh git
+   gh auth login
+   ```
 
-```bash
-git clone https://github.com/neohunter/gh-img.git
-cd gh-img
-npm link            # puts `gh-img` on your PATH (gh-img.cmd on Windows)
-gh-img --version
-```
+2. Install gh-img, either as a `gh` extension…
 
-To update later: `git pull` inside the folder (no need to link again).
+   ```bash
+   gh extension install neohunter/gh-img
+   gh img --version          # invoked as `gh img`
+   ```
 
-> Using asdf? Run `asdf reshim nodejs` after `npm link` (and again after switching
-> Node versions).
+   …or from source, to get a standalone `gh-img` command:
 
-### Windows: save your session once
+   ```bash
+   git clone https://github.com/neohunter/gh-img.git ~/gh-img
+   cd ~/gh-img && npm link
+   gh-img --version
+   ```
 
-```powershell
-gh-img login --clipboard    # after copying user_session from Chrome DevTools
-gh-img doctor -R owner/repo
-```
+   > Using asdf? Run `asdf reshim nodejs` after `npm link` (and again after switching
+   > Node versions).
 
-See [Manual fallback](#manual-fallback-saving-your-user_session) for details.
+3. Check the setup:
 
-### First run on macOS: Keychain permission
+   ```bash
+   gh-img doctor -R owner/repo
+   ```
 
-```bash
-gh-img doctor -R owner/repo
-```
+   macOS shows a dialog asking for access to **"Chrome Safe Storage"**. Choose
+   **"Always Allow"** so it doesn't ask again. That's it: from now on the session
+   is read from Chrome automatically.
 
-macOS will show a dialog asking for access to **"Chrome Safe Storage"**. Choose
-**"Always Allow"** so it doesn't ask again. `doctor` uploads nothing. It checks Node,
-`gh`, browser profiles, the session, and that it can obtain the repo's upload token.
+### Windows
+
+Run these in PowerShell. Only the requirements installers may show a Windows permission (UAC) prompt; gh-img itself needs no administrator rights.
+
+1. Install the requirements (skip what you already have), then **open a new
+   PowerShell window** so the PATH is refreshed:
+
+   ```powershell
+   winget install OpenJS.NodeJS.LTS
+   winget install GitHub.cli
+   winget install Git.Git
+   ```
+
+   ```powershell
+   gh auth login
+   ```
+
+2. Install gh-img:
+
+   ```powershell
+   git clone https://github.com/neohunter/gh-img.git $HOME\gh-img
+   cd $HOME\gh-img; npm link
+   gh-img --version
+   ```
+
+3. Save your GitHub session once. Chrome on Windows doesn't let other programs
+   read its cookies, so this step replaces the automatic reading used on macOS:
+   1. In Chrome, open github.com → DevTools (F12) → **Application** → **Cookies** →
+      `https://github.com` → copy the value of `user_session`.
+   2. Run:
+
+      ```powershell
+      gh-img login --clipboard
+      ```
+
+   It's stored encrypted with DPAPI (only your Windows user can read it). Repeat
+   when the GitHub session expires; `gh-img doctor` tells you when.
+
+4. Check the setup:
+
+   ```powershell
+   gh-img doctor -R owner/repo
+   ```
+
+### Linux
+
+1. Install Node ≥ 22.13 ([nodejs.org](https://nodejs.org/en/download) or your
+   version manager), [`gh`](https://github.com/cli/cli/blob/trunk/docs/install_linux.md)
+   and git, then run `gh auth login`.
+2. Install gh-img as on macOS (`gh extension install neohunter/gh-img`, or clone + `npm link`).
+3. Run `gh-img doctor -R owner/repo`. The session is read from Chrome automatically
+   (it uses `secret-tool` when the browser stores its key in the keyring).
+
+### What `doctor` output looks like
+
+`doctor` uploads nothing. It checks Node, `gh`, browser profiles, the session, and
+that it can obtain the repo's upload token.
 
 ```console
 $ gh-img doctor -R acme/web
@@ -132,14 +187,32 @@ $ gh-img doctor -R acme/web
 ✓ upload token obtained for acme/web using chrome profile "Work" (octocat) — ready to upload
 ```
 
+### Updating
+
+- `gh` extension: `gh extension upgrade gh-img`
+- From source: `git pull` inside the cloned folder (no need to link again).
+
 ### For agents (Cursor / Claude Code)
 
-The repo ships a skill in [`skill/SKILL.md`](skill/SKILL.md). Link it:
+The repo ships a skill in [`skill/SKILL.md`](skill/SKILL.md). Link it into your
+agent's skills folder (create the `skills` folder first if it doesn't exist).
+
+macOS / Linux, from the cloned folder:
 
 ```bash
 ln -s "$PWD/skill" ~/.cursor/skills/gh-img
 ln -s "$PWD/skill" ~/.claude/skills/gh-img
 ```
+
+Windows (PowerShell; a junction needs no admin rights):
+
+```powershell
+New-Item -ItemType Junction -Path $HOME\.cursor\skills\gh-img -Target $HOME\gh-img\skill
+New-Item -ItemType Junction -Path $HOME\.claude\skills\gh-img -Target $HOME\gh-img\skill
+```
+
+If you installed it as a `gh` extension, the cloned folder lives in
+`~/.local/share/gh/extensions/gh-img`.
 
 ## Usage
 
